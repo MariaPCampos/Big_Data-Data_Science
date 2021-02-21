@@ -1,0 +1,228 @@
+---
+title: "Análisis de datos y predicción con modelos de machine learning"
+author: "María Pérez Campos"
+output: html_document
+---
+
+
+## Introducción
+El objetivo general de la práctica será aprender a realizar un análisis completo de un dataset, así como aprender a utilizar modelos de machine learning para explorar esos datos y ser capaces de utilizarlos para que realicen predicciones sobre el target que nos propongamos. En este caso, utilizaremos un dataset de estudiantes de instituto (centrándonos en los de matemáticas), y nuestro objetivo específico será predecir la nota numérica final que tendrán dichos alumnos.
+
+La práctica se dividirá en una serie de fases, empezando por una primera pre-fase de "preparación", donde dejaremos instaladas y cargadas las librerías que usaremos a lo largo de la práctica, así como descargaremos y leeremos el dataset escogido, asimismo, incluiremos algunas pequeñas acciones de preparación y limpieza de datos antes de pasar a analizar los datos. En segundo lugar, realizaremos un análisis descriptivo y exploratorio de nuestro conjunto de datos, apoyándonos para hacer el exploratorio en un modelo no supervisado. Continuaremos con una fase de elección, construcción y optimización de dos modelos de machine learning supervisados, para, por último, llegar a la fase de evaluación y comparación de estos modelos.
+
+
+## Preparación previa
+Como ya comentamos en la introducción, en esta pre-fase prepararemos y dejaremos listo todo lo necesario para poder empezar con nuestros análisis. Procedemos de la siguiente forma:
+```{r, results='hide', message=FALSE}
+# Instalamos y cargamos las librerías que utilizaremos.
+InstallAndLoadLibrary <- function(library_name) {
+	if(!library_name %in% installed.packages()) {
+	  install.packages(library_name, depend = TRUE)
+	} 
+	library(library_name, character.only = TRUE)
+}
+lapply(c("knitr", "dplyr", "caret", "cluster", "corrplot", "ggplot2", "rmarkdown", "randomForest"), InstallAndLoadLibrary)
+rm(list=ls())
+```
+
+```{r}
+# Descargamos y descomprimimos nuestro dataset.
+if (!file.exists("./datos")) {
+  dir.create("./datos")
+}
+file_URL <- "https://archive.ics.uci.edu/ml/machine-learning-databases/00320/student.zip"
+download.file(file_URL,destfile="./datos/student.zip",method="wininet")
+unzip("./datos/student.zip", exdir="./datos")
+list.files("./datos")
+
+# Guardamos la fecha de descarga para falicitar la reproducibilidad y trazabilidad del código.
+download_date <- date()
+download_date
+
+# Leemos los datos.
+math_students <- read.table(
+  "./datos/student-mat.csv",
+  row.names=NULL,
+  sep=";",
+  quote = "\"",
+  header=TRUE
+)
+```
+
+Para finalizar la preparación previa del dataset, realizaremos algunas operaciones de limpieza. En este caso, algunas de las variables que actualmente son consideradas como tipo `"numeric"` realmente son de tipo `"factor"`. Hacemos uso de la función `str` y comparamos los resultados con la documentación del dataset para identificar cuáles son las variables que deben ser convertidas a `factor`, en total, identificamos diez variables. Las convertimos en factores ordenados con la función `ordered` y comprobamos con `str` que los cambios se han aplicado correctamente.
+```{r, results='hide', message=FALSE}
+education_levels <- c("none", "primary", "5th-9th", "secondary", "higher")
+math_students$Medu <- ordered(math_students$Medu, levels = 0:4, labels = education_levels)  
+math_students$Fedu <- ordered(math_students$Fedu, levels = 0:4, labels = education_levels)
+math_students$traveltime <- ordered(math_students$traveltime, levels = 1:4, labels = c("<15m", "15m-30m", "30m-1h", ">1h")) 
+math_students$studytime <- ordered(math_students$studytime, levels = 1:4, labels = c("<2h", "2h-5h", "5h-10h", "<10h"))
+quality_levels <- c("very bad", "bad", "okey", "good", "excelent")
+math_students$famrel <- ordered(math_students$famrel, levels = 1:5, labels = quality_levels)
+math_students$health <- ordered(math_students$health, levels = 1:5, labels = quality_levels)
+quantity_levels <- c("very low", "low", "medium", "high", "very high")
+math_students$freetime <- ordered(math_students$freetime, levels = 1:5, labels = quantity_levels)
+math_students$goout <- ordered(math_students$goout, levels = 1:5, labels = quantity_levels)
+math_students$Dalc <- ordered(math_students$Dalc, levels = 1:5, labels = quantity_levels)
+math_students$Walc <- ordered(math_students$Walc, levels = 1:5, labels = quantity_levels)
+str(math_students)
+```
+
+## Análisis descriptivo y exploratorio
+Empezando con el análisis del dataset, vemos con la función `dim` que está compuesto por 395 observaciones distribuidas en 33 variables, además comprobamos que no hay NA's. Posteriormente, visualizamos con la librería `rmarkdown` un resumen estadístico para tener una visión global de nuestros datos. Este resumen incluye medidas de tendencia central (media y mediana), de posición (cuantiles y frecuencias absolutas) y algunas medidas de dispersión (mínimo y máximo).
+
+```{r, results='hide', message=FALSE}
+dim(math_students)
+sapply(math_students, function(x) sum(is.na(x)))
+```
+```{r}
+paged_table(as.data.frame(unclass(summary(math_students)),  check.names = F, stringsAsFactors = F))
+```
+
+Para poder hacernos una idea más visual de la distribución de nuestra variable target (G3), trazamos un histograma de la misma. En él podemos apreciar como la distribución tiene una forma semejante a la curva normal, si bien existen algunos datos que alejan dicha distribución de la "clásica" curva normal. Nos referimos especialmente a los datos acumulados en el extremo izquierdo de la distribución, ya que constituyen un número importante de observaciones, correspondiéndose probablemente estas observaciones con alumnos que no se presentaron al examen y que, por tanto, abandonaron el curso académico obteniendo una nota final de 0. En futuros análisis podría ser interesante analizar este subgrupo de puntuaciones y ver qué variables pueden ser predictoras del abandono académico de los alumnos.
+```{r}
+hist(
+  math_students$G3,
+  main = "Figura 1. Histograma nota final (G3).",
+  xlab = "Nota final",
+  col = "#818fb1",
+  breaks = 20
+)
+```
+
+Además como parte del análisis exploratorio, incluimos algún gráfico que ponga de relieve la posible relación de nuestra variable target con alguna otra variable del dataset. En este caso elegimos la variable "Fedu", que representa la educación de los padres, y utilizamos un boxplot para visualizar la relación de ambas variables. Resalta el hecho de que los alumnos que obtienen de media las mejores notas tienen padres que no han recibido una educación formal, quizá bajo esta relación exista una explicación sociológica para la ocurrencia de este fenómeno como podría ser, por ejemplo, que la educación sea más valorada entre los hijos de padres que no han tenido oportunidad de estudiar formalmente (o que decidieron empezar precozmente a trabajar), o bien que estos hijos tengan una motivación más alta de obtener un buen rendimiento académico para no acabar en una situación laboral precaria parecida a la que podrían tener algunos de sus padres. Las posibles hipótesis, exploraciones y análisis en la relación de la edudación de padres y las notas de sus hijos son numerosas, y es posible que resultara interesante profundizar en estas variables en el futuro.
+```{r}
+ggplot(math_students, aes(x = Fedu, y = G3)) + 
+  geom_boxplot(aes(fill = Fedu), alpha = .6, size = 1) + 
+  stat_summary(fun = "mean", geom = "point", shape = 23, size = 3, fill = "white") + 
+  ggtitle("Figura 2. Distribución nota final frente a educación del padre.")
+```
+
+Por último, podemos intentar analizar mediante clustering las notas de las tres evaluaciones. Aplicando clustering jerárquico con `hclust` generamos diferentes grupos basándonos en estas variables, realizamos también un dendrograma.
+```{r}
+set.seed(1234)
+math_students.select <- math_students  %>% select(G1, G2, G3)
+hc_clust <- hclust(dist(math_students.select), method = "ave")
+plot(hc_clust, hang = -1, labels = math_students$pass, main = "Figura 3. Dendrograma de cluster")
+rect.hclust(hc_clust, k = 8)
+
+# se obtienen los elementos que forman esos grupos
+groups <- cutree(hc_clust, k=8)
+```
+Las formas en las qué podríamos explorar los distintos clusters son muy diversas, pero centrándonos en el número de grupos que hemos elegido (`k=8`) podemos encontrar algunos subgrupos de datos interesantes con características específicas. Mostramos algunos de los subgrupos más significativos que hemos encontrado:
+
+- Alumnos que suspenden G1 y, tras eso, abandonan el curso académico:
+```{r}
+kable(summary(math_students.select[groups == 8,]))
+
+```
+
+- Alumnos con buenas notas mantenidas a lo largo de todo el curso académico:
+```{r}
+kable(summary(math_students.select[groups == 5,]))
+```
+
+## Entrenamiento de modelos supervisados de machine learning
+Acorde a nuestro objetivo de predecir la nota final numérica de los estudiantes, elegiremos dos modelos supervisados de regresión. En este caso los modelos escogidos serán: regresión lineal multivariable y random forest.
+
+### Preparación del entrenamiento
+Empezaremos preparando los datos para el entrenamiento de los modelos, siendo nuestro target predecir la variable G3. Para ello creamos en primer lugar la partición de nuestro dataset con proporción 70% y dos dataframes, uno con los datos de entrenamiento y otro con los datos de prueba.
+```{r}
+set.seed(1234)
+partitions_math_students <- createDataPartition(math_students$G3, p = 0.7, list = FALSE)
+train_math_students <- math_students[partitions_math_students, ]
+test_math_students <- math_students[-partitions_math_students, ]
+```
+
+Continuamos creando una nueva variable que recoja los predictores y analizamos la varianza de los del conjunto de entrenamiento para determinar si alguna variable no nos está aportando información. Encontramos que la variable "higher" (la cual representa el interés de los estudiantes por continuar con su formación una vez acabe el instituto), es un mal predictor de nuestro target (ya que su varianza es $\approx$ 0), por lo que la eliminamos de los conjuntos de entrenamiento y prueba.
+```{r}
+predictors_math_students <- train_math_students %>% select(-G3)
+zerovar <- nearZeroVar(predictors_math_students, saveMetrics = FALSE)
+colnames(predictors_math_students)[zerovar]
+train_math_students <- train_math_students[, -zerovar]
+test_math_students <- test_math_students[, -zerovar]
+```
+
+Antes de comenzar a entrenar nuestros modelos, normalizamos los valores para facilitar el ajuste de los mismos.
+```{r}
+xTrans <- preProcess(train_math_students[, -dim(train_math_students)[2]], method = c("center", "scale")) 
+train_math_students_preprocessed <- predict(xTrans, train_math_students[,-dim(train_math_students)[2]])
+train_math_students_preprocessed$G3 <- train_math_students$G3
+test_math_students_preprocessed <- predict(xTrans, test_math_students[,-dim(test_math_students)[2]], method = c("center", "scale"))
+test_math_students_preprocessed$G3 <- test_math_students$G3
+kable(head(train_math_students_preprocessed %>% select(G1, G2), 3))
+```
+
+### Entrenamiento del modelo de regresión lineal
+Una vez preparados los datos, empezamos entrenando el modelo de regresión lineal. Para ello configuramos el entrenamiento del modelo para luego pasar al entrenamiento en sí mismo.
+```{r}
+fitControl <- trainControl(method="cv")
+lm_model_caret <-  train(
+  x = train_math_students_preprocessed %>% select(-G3), 
+  y = train_math_students_preprocessed$G3, 
+  method = "lm", 
+  trControl = fitControl
+)
+```
+
+### Entrenamiento del modelo random forest
+A continuación, pasamos a entrenar este modelo usando el mismo procedimiento que se utilizó previamente para el modelo de regresión lineal.
+```{r}
+tunegrid <- expand.grid(mtry=c(1))
+rf_reg_model <- train(
+  x = train_math_students_preprocessed %>% select(-G3), 
+  y = train_math_students_preprocessed$G3, 
+  method = "rf",
+  tuneGrid = tunegrid, 
+  trControl = fitControl
+)
+```
+
+## Evaluación y comparación de modelos
+
+En primer lugar, evaluaremos por separado las predicciones de cada modelo sobre el conjunto de prueba para, posteriormente, hacer una comparativa de las predicciones de ambos modelos entre sí.
+Empezando por el modelo de regresión lineal, vemos que el error absoluto medio cometido por el modelo es de aproximadamente 1.6, así como su $R^2$ es de 0.8, lo que representaría un valor de ajuste aunque no excelente, sí suficientemente bueno como para considerar al modelo adecuado para predecir nuestro target.
+```{r}
+lm_model_caret_predict <- predict(lm_model_caret$finalModel, newdata = test_math_students_preprocessed)
+lm_model_prediction_comparison <- data.frame((lm_model_caret_predict), (test_math_students_preprocessed$G3))
+colnames(lm_model_prediction_comparison) <- c("Predicted","Real")
+kable(head(lm_model_prediction_comparison, 3))
+test_values_lm <-data.frame(obs=test_math_students_preprocessed$G3, pred=lm_model_caret_predict)
+kable(defaultSummary(test_values_lm))
+```
+
+Con respecto al modelo de random forest, podemos ver que tiene un error absoluto medio de 2.7 y un $R^2=0.69$. Estos valores si bien entrarían dentro de lo aceptable, hacen que no podamos considerar este modelo como "de elección" para nuestra predicción objetivo.
+```{r}
+rf_reg_model_predict <- predict(rf_reg_model$finalModel, newdata = test_math_students_preprocessed)
+rf_reg_model_comparison <- data.frame((rf_reg_model_predict), (test_math_students_preprocessed$G3))
+colnames(rf_reg_model_comparison) <- c("Predicted","Real")
+kable(head(rf_reg_model_comparison, 3))
+test_values_rf<-data.frame(obs=test_math_students_preprocessed$G3, pred=rf_reg_model_predict)
+kable(defaultSummary(test_values_rf))
+```
+
+A modo de comparativa, visualizamos un boxplot para poder apreciar las diferencias en el error absoluto analizado entre ambos modelos de machine learning. Se muestra el gráfico a continuación:
+```{r}
+lineal_abs_error <- lm_model_prediction_comparison %>% 
+  mutate(abs_error = abs(Real - Predicted), model = "lineal") %>% 
+  select(abs_error, model)
+
+rf_abs_error <- rf_reg_model_comparison %>% 
+  mutate(abs_error = abs(Real - Predicted), model = "random_forest") %>% 
+  select(abs_error, model)
+
+abs_errors <- union(lineal_abs_error, rf_abs_error)
+
+ggplot(data = abs_errors, aes(y = abs_error, x = model)) + geom_boxplot(aes(fill = model)) + 
+  ggtitle("Figura 4. Error absoluto de los modelos.")
+```
+
+Como valoración final, en la tabla que se muestra a continuación, podemos apreciar que en general el modelo de regresión lineal ha funcionado mejor que el random forest para nuestro objetivo de predecir la nota final numérica de los estudiantes del dataset escogido. Quizá en datasets de mayor envergadura el random forest podría alcanzar mayor precisión en sus predicciones, pero para estos datos en concreto y en vista de los resultados obtenidos, nos decantamos de forma clara por la regresión lineal multivariable.
+```{r}
+reg_models <- list(lm_model_caret, rf_reg_model)
+compar_reg_models <- resamples(reg_models)
+summary(compar_reg_models)
+```
+
+
+
+

@@ -1,0 +1,752 @@
+---
+title: "Calidad del aire Gijón - actividad 3"
+author: "María_Pérez"
+Date: "Diciembre, 2020"
+output: 
+  html_document: 
+    highlight: tango
+    theme: spacelab
+    toc: yes
+---
+
+## 1. Contexto. 
+A partir de los datos abiertos de contaminación de las estaciones meteorológicas de Gijón la práctica consistirá en:
+
+- Hacer un estudio sobre los datos con el fin de conocer si existen diferencias significativas entre estaciones.
+- Hacer un forecast de evolución de un par de indicadores en una de las estaciones.
+
+Se podrá encontrar la información en la dirección [http://transparencia.gijon.es](http://transparencia.gijon.es)
+
+
+## 2. Carga del dataset y análisis.
+El dataset disponible y actualizado cada hora reportando los datos de los últimos 7 días, se encuentra disponible en la página web de Datos Abierto del ayuntamiento de Gijón. Asimismo encontramos los datasets de las estaciones, parámetros utilizados y datos de los últimos 18 años. [Catálogo de datos](http://transparencia.gijon.es/page/1808-catalogo-de-datos).
+Sabiendo esto, empezamos cargando el dataset, teniendo en cuenta que como paso previo al procesado debemos tener algunas consideraciones a la hora de cargar nuestros datos:
+
+- Una vez cargado por primera vez el dataset, creamos un nuevo archivo a través de la función `write.csv` y volvemos a cargar los datos, ya guardados de forma estática en local. Esto lo hacemos para que podamos hacer la actividad sin que los datos estén continuamente cambiando al cargar el archivo original del ayuntamiento de Gijón cada vez que se actualiza cada día. 
+- A la hora de cargar los datos, pondremos el parámetro `stringsAsFactors` como False, ya que todas las variables no deben ser entendidas por defecto como factores, si no convertidas algunas de ellas más adelante si consideramos que es necesario y conveniente al realizar el análisis y la exploración de los datos.
+```{r, message = FALSE, echo = FALSE}
+# Creamos el dataset del fichero de las estaciones de Gijon de los últimos 7 días (actualizado a fecha 8 de abril).
+# data_gijon <- read.csv(
+#   "http://opendata.gijon.es/descargar.php?id=1&tipo=CSV",
+#   encoding = 'UTF-8',
+#   stringsAsFactors = FALSE
+#   )
+# 
+# write.csv(data_gijon, file="./data_gijon.csv", row.names = FALSE)
+
+data_gijon <- read.csv("./data_gijon.csv", stringsAsFactors = FALSE)
+```
+
+Además, como parte de la preparación del dataset, asignaremos nombres a las distintas columnas a partir de un array para tener un header personalizado sin carácteres especiales y cargaremos las librerías que usaremos a lo largo de la tarea (en este caso, `lubridate`, `ggplot2`, `tidyr`, `stats`, `forecast`, `PerformanceAnalytics`, `corrplot` y `dplyr`).
+```{r message=FALSE, warning=FALSE}
+# Asignamos nombres a los atributos con la función `names`.
+names(data_gijon) <- c("EstacionID",
+                   "EstacionName","Lat","Lon",
+                   "Fecha_UTC","Periodo",
+                   "SO2","NO","NO2","CO","PM10","O3","dd","vv",
+                   "TMP","HR","PRB","RS","LL","BEN",
+                   "TOL","MXIL","PM25"
+                   )
+
+# Carga de las librerías.
+library(lubridate)
+library(dplyr)
+library(car)
+library(tidyr)
+library(tidyverse)
+library(leaflet)
+library(ggplot2)
+library(corrplot)
+library(PerformanceAnalytics)
+library(rapportools)
+library(PMCMR)
+library(forecast)
+library(tseries)
+```
+
+
+## 3. Limpieza del dataset.
+Empezamos con la limpieza del dataset, explorando la estructura del mismo.
+```{r}
+str(data_gijon)
+```
+
+En base a la información obtenida, decidimos cambiar el tipo de varios atributos que dada la naturaleza de sus datos y su distribución, encajan mejor entendidos como otro tipo de variables. En este caso, cambiaremos los atributos `EstacionID` y `EstacionName` a variables categóricas.
+```{r}
+# Convertimos en categórica la columna EstacionID.
+data_gijon$EstacionID = as.factor(data_gijon$EstacionID)
+
+# Convertimos en categórica la columna EstacionName.
+data_gijon$EstacionName = as.factor(data_gijon$EstacionName)
+```
+
+Comprobamos el cambio en los atributos que hemos recodificado:
+```{r}
+str(data_gijon[c("EstacionID", "EstacionName")])
+```
+
+Además, el atributo `Fecha_UTC` lo transformaremos en un dato de tipo fecha. Ya que el atributo `Periodo` se corresponde con las horas, lo juntaremos con el atributo `Fecha_UTC` para tener la fecha más completa y precisa.
+```{r}
+data_gijon <- data_gijon %>% 
+  mutate(Periodo = Periodo - 1) %>% 
+  unite(Fecha_UTC, Fecha_UTC, Periodo, sep = "-") %>% 
+  mutate(Fecha_UTC = as_datetime(Fecha_UTC, format = "%Y-%m-%d-%H"))
+```
+
+Pasamos ahora a comprobar en cada columna los NAs, posibles strings vacíos y posibles valores anómalos. 
+Empezamos con los valores vacíos, vemos que no existen strings vacíos en ninguna columna.
+```{r}
+# Forzamos con el parámetro na.rm para que se pueda calcular la suma a pesar de los NA's.
+colSums(subset(data_gijon, select = -Fecha_UTC) == "", na.rm = T) 
+```
+
+Comprobamos la existencia de valores anómalos o extraños en todas las columnas utilizando la función `lapply` y `unique`. Vemos que no existen valores extraños en las columnas.
+```{r}
+# Comprobamos los valores únicos de cada columna.
+lapply(data_gijon, unique)
+```
+
+Pasamos a comprobar los NAs, observamos que existen muchos atributos con una gran cantidad de valores NA's, siendo estos: `SO2`, `CO`, `PM10`, `O3`, `dd`, `vv`, `TMP`, `HR`, `PRB`, `RS`, `LL`, `BEN`, `TOL`, `MXIL` y `PM25`.
+```{r}
+# Comprobamos NAs.
+colSums(is.na(data_gijon))
+```
+
+Viendo que algunas columnas presentan un número elevado de NAs, calculamos los porcentajes de NAs en cada columna para cuántificarlos de una forma más precisa.
+```{r}
+total_rows <- nrow(data_gijon)
+
+# Calculamos el porcentaje de NAs en la columna.
+data_NA_perc = (colSums(is.na(data_gijon)) / total_rows) * 100
+
+# Mostramos el valor calculado.
+data_NA_perc
+```
+
+Exploramos un poco más ya que resulta extraño un número tan elevado de NAs. Agrupamos por estación y sumamos los NAs convertidos en porcentajes, para comprobar qué información nos da cada estación en particular en relación a ellos, que quizá pudieran explicarse porque no todas las estaciones informan de las mismas medidas. Utilizamos la función `summarise_all` para calcular sobre todas las columnas.
+```{r}
+# Agrupamos.
+stations_NA_info <- data_gijon %>% group_by(EstacionName) %>% summarise_all(funs((sum(is.na(.)) / n(.) ) * 100 ))
+
+# Mostramos la tabla informativa.
+stations_NA_info
+```
+
+Comprobamos en la tabla anterior que existen estaciones que tienen en algunos atributos un 100% de NAs, por lo que se entiende que en lugar de faltar el dato en sí, la estación simplemente no informa de ese tipo de valor, al faltar el dato en su totalidad. Este hecho ocurre en todas las estaciones por lo que visualizaremos el resultado para ver más claramente qué información nos proporciona cada estación.
+```{r}
+# Pivotamos el dataframe anterior para que nuestros datos encajen en el gráfico que queremos crear.
+pivoted <- stations_NA_info %>% pivot_longer(!EstacionName, names_to = "medida", values_to = "porcentajeNAs")
+
+# Mostramos el dataframe pivotado.
+pivoted
+```
+
+Visualizamos con `ggplot2` nuestros datos, obteniendo seis gráficas cada una correspondiente a una estación.
+```{r}
+# Creamos una variable que contenga el nombre de las estaciones.
+estaciones <- unique(pivoted$EstacionName)
+
+# Iteramos sobre nuestra variable y creamos el gráfico.
+for (name in estaciones) {
+   print(ggplot(data = pivoted %>% filter(EstacionName == name), mapping = aes(y = porcentajeNAs, x = medida, fill = medida)) +   
+    geom_bar(stat = "identity") + 
+      # Orientamos las etiquetas del eje x en vertical para que no queden solapadas.
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+      # Añadimos título al gráfico.
+      ggtitle(name) 
+   )
+}
+```
+
+Viendo las gráficas anteriores podemos sacar varias conclusiones:
+
+- La Estación Avenida Constitución es la que proporciona más medidas, faltándole solamente la información relativa al CO.
+- La segunda estación que proporciona más medidas es la Estación Montevil, la cual no informaría de los siguientes datos: CO, BEN, MXIL, PM10 y TOL.
+- Las estaciones Avenida Castilla y Avenida Argentina informan exactamente de las mismas medidas, así como la estación Avenida Hermanos Felgueroso informa también de las mismas medidas que estas dos con la salvedad de que en su caso le falta además la medida de CO.
+- La Estación Santa Bárbara es la que proporciona información de menos medidas.
+- Todas las estaciones no informan de los mismos valores, evidenciándose esto al encontrar un 100% de NAs en las medidas faltantes.
+- Existen solo dos medidas que tienen valores perdidos reales (es decir, estaciones que aún informando de estos valores tienen algunos NAs). Estas medidas son: PM10 y PM25.
+
+Teniendo todo esto en cuenta, se decide no tocar los NAs que hacen referencia a medidas que no son reportadas por algunas estaciones, ya que realmente no son valores perdidos en sí mismos, si no parte de la información normal que pueden proporcionar las estaciones. Se realizará un tratamiento de los NAs que sí suponen valores perdidos reales, en este caso como ya dijimos, el PM10 (que contiene un 0.59% aprox. de NAs para la Estación Avenida Constitución) y el PM25 (que contiene un 1,19% aprox. de NAs para la Estación Montevil y un 0.59% aprox. de NAs para la Estación Avenida Constitución).
+
+A la hora de tratar estos NAs y dado que el porcentaje de NAs en ambas variables es muy bajo, optaremos por eliminar las filas que los contengan frente a imputar los datos con algún valor "inventado", ya que el impacto de eliminar estas filas no constituirá algo relevante y la imputación de datos por otro valor podría en este caso conllevar mayores sesgos en nuestros análisis. Empezamos tratando los valores perdidos de PM10:
+```{r}
+# Tratamiento de los NAs de la variable PM10.
+data_gijon <- data_gijon %>% 
+  filter(!(EstacionName == "Estación Avenida Constitución" & is.na(PM10)))
+
+# Comprobamos que se han eliminado los NAs.
+data_gijon%>% 
+  filter(EstacionName == "Estación Avenida Constitución") %>% 
+  summarise(n_NAs = sum(is.na(PM10)), c = n(.))
+```
+
+```{r}
+# Tratamiento de los NAs de la variable PM25.
+data_gijon <- data_gijon %>% 
+  filter(!(EstacionName %in% c("Estación Avenida Constitución", "Estación de Montevil") & is.na(PM25)))
+
+# Comprobamos que se han eliminado los NAs.
+data_gijon %>% 
+  filter(EstacionName %in% c("Estación Avenida Constitución", "Estación de Montevil")) %>% 
+  summarise(n_NAs = sum(is.na(PM25)), c = n(.))
+```
+
+Vemos cómo queda el número de filas tras los cambios y comprobamos como el tamaño del dataset se ha reducido, aunque no de manera sustancial.
+```{r}
+# Miramos el número de filas del dataset.
+nrow(data_gijon)
+```
+
+
+## 4. EDA (Exploratory Data Analysis).
+Comenzando con el análisis del dataset, vemos con la función `dim` que está compuesto por 1005 observaciones distribuidas en 23 variables.
+```{r}
+# Dimensiones del dataset.
+dim(data_gijon)
+```
+
+Podemos extraer también el listado de las columnas o etiquetas y comprobar el número de filas (en este caso, 1005).
+```{r}
+# Extraemos el listado de las columnas.
+ls(data_gijon)
+
+# También las etiquetas.
+names(data_gijon)
+
+# Comprobamos el número de filas.
+nrow(data_gijon)
+```
+
+Comprobamos los valores únicos en el dataset.
+```{r}
+names(unique(data_gijon))
+```
+
+También podemos ver cómo ha quedado la estructura de nuestros datos una vez terminada la limpieza.
+```{r}
+str(data_gijon)
+```
+
+Mostramos los diez primeros resultados del dataset, dividiéndolo en tres trozos para que resulte más sencillo ver todos los datos.
+```{r}
+# Utilizamos la función `head` y mostramos los primeros resultados.
+head(data_gijon[1:8], 10)
+head(data_gijon[9:17], 10)
+head(data_gijon[18:22], 10)
+```
+
+Para tener una visión global de los datos a nivel estadístico, con la función `summary` sacaremos un resumen estadístico global. Este resumen incluye medidas de tendencia central, de posición y algunas medidas de dispersión.
+```{r}
+summary(data_gijon)
+```
+
+Pasamos a examinar si los diferentes atributos tienen outliers y, en caso de haberlos, decidiremos qué tratamiento darles en cada caso. Utilizaremos la función `rp.outlier` de la librería `rapportools`.
+```{r}
+# Creamos un dataframe filtrado por solo variables numéricas.
+data_gijon_num <- data_gijon[, c("Lat","Lon",
+                   "SO2","NO","NO2","CO","PM10","O3","dd","vv",
+                   "TMP","HR","PRB","RS","LL","BEN",
+                   "TOL","MXIL","PM25"
+                   )]
+  
+# Utilizamos `lapply` para mostrar todos los outliers de cada columna numérica del dataset.
+lapply(data_gijon_num, rp.outlier)
+```
+
+Como puede verse en la tabla anterior, hay varias columnas que tienen outliers entre sus valores, siendo estas: `PM25`, `MXIL`, `TOL`, `BEN`, `LL`, `RS`, `HR`, `vv`, `NO2` y `NO2`. Pasaremos a eliminar estos outliers para que no nos interfieran en los análisis estadísticos que realizaremos más adelante. Procedemos de la siguiente forma:
+```{r}
+# Creamos una función que devuelve un dataframe filtrando los outliers.
+return_outliers <- function(dataframe, column){
+  outliers <- rp.outlier(dataframe[, column])
+  data_gijon_without_outl <- dataframe[-which(dataframe[, column] %in% outliers), ]
+  return(data_gijon_without_outl)
+}
+```
+
+```{r}
+# Creamos un array con el nombre de los atributos que contienen outliers.
+elements_with_outliers <- c("PM25", "MXIL", "TOL", "BEN", "LL", "RS", "HR", "vv", "NO2", "NO2")
+
+
+# Iteramos sobre el array, aplicando la función anteriormente creada para eliminar los outliers de cada atributo.
+ for (elements in elements_with_outliers){
+   if (length(rp.outlier(data_gijon[, elements])) != 0) {
+     data_gijon <- return_outliers(data_gijon, elements)
+   }
+ }
+```
+
+Comprobamos los cambios que ha producido la eliminación de outliers en los datos, podemos ver que se ha reducido la muestra quedándonos con un total de 975 filas.
+```{r}
+# Utilizamos la función `nrow` para examinar el total de filas.
+nrow(data_gijon)
+```
+
+
+### 4.1. Correlaciones.
+Pasaremos a examinar las correlaciones entre las variables, para ello, crearemos una matriz de correlación con las columnas numéricas y visualizaremos la misma con la función `corrplot`. Tendremos en cuenta a la hora de interpretarlo que las "?" representan correlaciones que no han podido realizarse debido a los NAs.
+```{r}
+# Creamos la matriz de correlación.
+correlation_matrix <- cor(data_gijon[, c("Lat","Lon",
+                   "SO2","NO","NO2","CO","PM10","O3","dd","vv",
+                   "TMP","HR","PRB","RS","LL","BEN",
+                   "TOL","MXIL","PM25"
+                   )],
+                   # el siguiente parámetro lo utilizamos para que se calculen las correlaciones a pesar
+                   # de los NAs.
+                   use = "pairwise.complete.obs"
+                   )
+
+# Visualizamos la matriz de correlación.
+corrplot(correlation_matrix)
+```
+
+Aquí tenemos otro tipo de tabla de correlaciones que utilizando la correlación de Pearson, permite visualizar la distribución de algunas variables. Ya podemos ver a simple vista que la mayoría no se asemejan a una distribución normal.
+```{r}
+# Tabla de correlaciones.
+chart.Correlation(data_gijon[, c("PM10", "PM25", "SO2","NO2", "O3")])
+```
+
+
+### 4.2. Visualización de las medias de los valores en las diferentes estaciones.
+Para empezar, crearemos un gráfico utilizando la librería `leaflet` donde se podrán ver las distintas estaciones y su situación geógrafica.
+```{r}
+# Mostramos la latitud y longitud de las diferentes estaciones.
+data_gijon %>%  
+  group_by(EstacionName) %>% 
+  summarise(lon = unique(Lon), lat = unique(Lat))
+```
+
+```{r}
+# Creamos el gráfico usando la información anterior.
+stations_map <- leaflet() %>%
+   addTiles() %>%
+   addMarkers(
+    lng = c(-5.698930, -5.645951, -5.673428, -5.658123, -5.672499, -5.690707),
+    lat = c(43.53887, 43.53794, 43.52981, 43.53506, 43.51732, 43.52096)) %>% 
+   setView(lng=-5.66193, lat=43.5453, zoom=13)
+
+# Mostramos el mapa.
+stations_map
+```
+
+
+Una vez visualizadas las estaciones, pasaremos a analizar algunas de las medidas y sus diferencias en función de la estación. Ya que tenemos muchas medidas diferentes y no podemos abarcarlo todo, para este análisis examinaremos cinco contaminantes que son considerados clave para la calidad del aire y perjudiciales para la salud de las personas y del medio ambiente, estos son:
+
+- Partículas en suspensión (PM2,5 y PM10).
+- Ozono troposférico (O3).
+- Dióxido de nitrógeno (NO2).
+- Dióxido de azufre (SO2).
+
+En primer lugar agrupamos por estaciones y extraemos un dataframe con las medias de las distintas medidas. Este dataframe nos servirá para elaborar las gráficas siguientes.
+```{r}
+# Agrupamos por estaciones.
+stations_info_mean <- data_gijon %>% select(-c(EstacionID, Fecha_UTC)) %>% group_by(EstacionName) %>% summarise_all(funs(media = mean(., na.rm = TRUE)))
+
+# Mostramos la tabla informativa.
+stations_info_mean
+```
+
+```{r}
+# Pivotamos el dataframe para que nuestros datos encajen en el gráfico que queremos crear.
+pivoted_means <- stations_info_mean %>% pivot_longer(!EstacionName, names_to = "Medidas", values_to = "Medias")
+
+# Mostramos el dataframe pivotado.
+pivoted_means
+```
+
+Visualizamos la diferencia de medias entre las distintas estaciones de las partículas en suspensión (PM2,5 y PM10). Empezamos con el PM10, podemos ver como la estación Santa Bárbara es la tiene la media más alta de esta partícula, así como la estación Avenida Castilla y la estación Avenida Hermanos Felgueroso son las que tienen las medias más bajas, teniendo ambas un valor muy similar. Apreciamos también que la estación de Montevil no reporta datos de esta partícula.
+```{r}
+# Creamos el gráfico con `ggplot2`.
+ggplot(data = pivoted_means %>% 
+          filter(Medidas == "PM10_media"), 
+          mapping = aes(y = Medias, x = EstacionName, fill = EstacionName)) +   
+          geom_bar(stat = "identity") + 
+          # Orientamos las etiquetas del eje x en vertical para que no queden solapadas.
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+          # Añadimos título al gráfico.
+        ggtitle("Media de PM10 según las distintas estaciones")
+```
+
+Pasando a la particula PM2,5, podemos ver como solo dos estaciones reportan información sobre ella (estación de Montevil y estación Avenida Constitución), siendo la primera de ellas la que tiene una media más alta.
+```{r}
+# Creamos el gráfico con `ggplot2`.
+ggplot(data = pivoted_means %>% 
+          filter(Medidas == "PM25_media"), 
+          mapping = aes(y = Medias, x = EstacionName, fill = EstacionName)) +   
+          geom_bar(stat = "identity") + 
+          # Orientamos las etiquetas del eje x en vertical para que no queden solapadas.
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+          # Añadimos título al gráfico.
+        ggtitle("Media de PM2,5 según las distintas estaciones")
+```
+
+En relación al ozono troposférico (O3), podemos observar que las estaciones tienen unas medias aparentemente similares entre sí, siendo la que informa una menor media la Estación Montevil. Apreciamos que esta sustancia es reportada por la mayoría de las estaciones metereológicas, siendo la Estación Santa Bárbara la única que no aporta este dato.
+```{r}
+# Creamos el gráfico con `ggplot2`.
+ggplot(data = pivoted_means %>% 
+          filter(Medidas == "O3_media"), 
+          mapping = aes(y = Medias, x = EstacionName, fill = EstacionName)) +   
+          geom_bar(stat = "identity") + 
+          # Orientamos las etiquetas del eje x en vertical para que no queden solapadas.
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+          # Añadimos título al gráfico.
+        ggtitle("Media de O3 según las distintas estaciones")
+```
+
+También podemos ver diferencias entre las medias de concentración de dióxido de nitrógeno (NO2) de las distintas estaciones. En este caso, todas las estaciones reportan esta información, siendo la que tiene una media más alta la Estación Santa Bárbara y la que menor la Estación Avenida Constitución, aunque las diferencias entre las distintas estaciones a nivel visual no resultan precisas.
+```{r}
+# Creamos el gráfico con `ggplot2`.
+ggplot(data = pivoted_means %>% 
+          filter(Medidas == "NO2_media"), 
+          mapping = aes(y = Medias, x = EstacionName, fill = EstacionName)) +   
+          geom_bar(stat = "identity") + 
+          # Orientamos las etiquetas del eje x en vertical para que no queden solapadas.
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+          # Añadimos título al gráfico.
+        ggtitle("Media de NO2 según las distintas estaciones")
+```
+
+Por último, en relación al dióxido de azufre (SO2) también se observan diferencias visuales, siendo la Estación Avenida Argentina la que tiene una mayor media de concentración de SO2 y la Estación de Montevil la que tiene una menor media de dicho valor. Solo la Estación Santa Bárbara no reporta información sobre el dióxido de azufre.
+```{r}
+# Creamos el gráfico con `ggplot2`.
+ggplot(data = pivoted_means %>% 
+          filter(Medidas == "SO2_media"), 
+          mapping = aes(y = Medias, x = EstacionName, fill = EstacionName)) +   
+          geom_bar(stat = "identity") + 
+          # Orientamos las etiquetas del eje x en vertical para que no queden solapadas.
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+          # Añadimos título al gráfico.
+        ggtitle("Media de SO2 según las distintas estaciones")
+```
+
+
+## 5. Valorar las diferencias estadistícas con t-test, Anova.
+Antes de comenzar el análisis estadístico y plantearnos aplicar el ANOVA, el primer paso sería comprobar que no hay valores atípicos significativos en nuestros datos. Como esto ya se ha realizado en apartados anteriores no lo repetiremos, pero siempre hay que tener en cuenta que es importante mirarlos como paso previo a realizar un ANOVA ya que pueden influir negativamente en los resultados de este tipo de análisis.
+Posteriormente, pasaremos a comprobar los tres supuestos que se deben cumplir para poder realizar un ANOVA con muestras independientes (lo cual es nuestro caso, ya que analizaremos los resultados registrados por las diferentes estaciones en distintas mediciones). Los supuestos para este tipo de ANOVA son:
+
+- Normalidad.
+- Homocedasticidad.
+- Independencia.
+
+Dada la relevancia de algunas mediciones para la salud y el medio ambiente, como ya dijimos anteriormente, nos seguiremos centrando en el análisis de las diferencias de algunas de estas mediciones, siendo estas las siguientes: PM10, PM2,5, NO2 y SO2. Por lo tando, nuestra variable dependiente será, en cada caso, una de estas medidas, y nuestra variable independiente serán las estaciones, teniendo esta variable hasta seis categorías posibles:
+
+- Estación Avenida Argentina.
+- Estación Avenida Castilla.
+- Estación Avenida Constitución.
+- Estación Avenida Hermanos Felgueroso.
+- Estación de Montevil.
+- Estación Santa Bárbara.
+
+
+### 5.1. Concentración de PM10 entre las diferentes estaciones.
+Empezamos comprobando el supuesto de normalidad, el cuál comprueba que la variable dependiente tiene una distribución aproximadamente normal para cada categoría de la variable independiente. Debido al tamaño de nuestra muestra (> 50 observaciones), se utilizará la prueba de Kolmogorov-Smirnov, a través de la función `ks.test`.
+En base al p-value que nos devuelve la función, podemos rechazar la hipótesis nula (la cual es que los datos proceden de una distribución normal) y decir que la variable PM10 no tiene una distribución normal.
+```{r}
+# Creamos un dataframe filtrado con las estaciones que reportan PM10.
+data_stations_PM10 <- data_gijon %>% filter(EstacionName != "Estación de Montevil")
+
+# Aplicamos la prueba de Kolmogorov-Smirnov.
+ks.test(data_stations_PM10$PM10, pnorm, mean(data_stations_PM10$PM10), sd(data_stations_PM10$PM10))
+```
+
+Pasamos a comprobar el siguiente supuesto, el de homnocedasticidad (homogeneidad de varianza), el cual comprueba que las varianzas de los subgrupos son iguales entre sí. Para ello aplicaremos el test de Bartlett y el test de Levene, ya que son los tests más conocidos para evaluar este supuesto, además del test de Fligner-Killeen, ya que este se caracteriza por ser menos sensible a la falta de normalidad.
+```{r}
+# Creamos variables que contengan cada estación.
+station_1 <- data_gijon[data_gijon$EstacionName == "Estación Avenida Argentina",]
+station_2 <- data_gijon[data_gijon$EstacionName == "Estación Avenida Castilla",]
+station_3 <- data_gijon[data_gijon$EstacionName == "Estación Avenida Constitución",]
+station_4 <- data_gijon[data_gijon$EstacionName == "Estación Avenida Hermanos Felgueroso",]
+station_5 <- data_gijon[data_gijon$EstacionName == "Estación de Montevil",]
+station_6 <- data_gijon[data_gijon$EstacionName == "Estación Santa Bárbara",]
+
+
+# Aplicamos el test de Bartlett.
+bartlett.test(x = list(station_1$PM10, station_2$PM10, station_3$PM10, station_4$PM10, station_6$PM10))
+```
+
+```{r}
+# Aplicamos el test de Levene.
+leveneTest(y = data_stations_PM10$PM10, group = data_stations_PM10$EstacionName, center = "mean")
+```
+
+```{r}
+# Aplicamos el test de Fligner-Killeen.
+fligner.test(x = list(station_1$PM10, station_2$PM10, station_3$PM10, station_4$PM10, station_6$PM10))
+```
+
+Hemos visto que los tres tests aplicados para comprobar la homocedasticidad muestran que hay diferentes varianzas entre los subgrupos, incluso en el test de Fligner-Killeen que es menos sensible al supuesto de normalidad, por tanto, podemos decir que existe heterocedasticidad. Siendo este el caso, y viendo que no cumplimos ni este supuesto ni el de normalidad, pasaremos a evaluar las diferencias entre nuestros subgrupos con el test de Kruskal-Wallis en lugar de con el ANOVA. Este test es una prueba no paramétrica muy útil para utilizarla cuando no se cumplen supuestos para que se pueda realizar un ANOVA con garantías. Las hipótesis de este test serían:
+
+$H_0$: la variable dependiente es la misma en todas las poblaciones valoradas.
+
+$H_1$: la variable dependiente es mayor en alguna de las poblaciones.
+
+Aplicamos el test de Kruskal-Wallis y como se puede ver a continuación, en base al p-value que nos devuelve la función, tenemos que rechazar la Hipótesis nula, con lo cual podemos decir que la concentración media de PM10 no es igual en todas las estaciones, siendo mayor en alguna de estas.
+```{r}
+kruskal.test(data_stations_PM10$PM10, data_stations_PM10$EstacionName)
+```
+
+Para conocer en qué estación se producen estas diferencias significativas en la media de concentración del PM10 aplicaremos la siguiente función:
+```{r}
+posthoc.kruskal.nemenyi.test(data_stations_PM10$PM10, data_stations_PM10$EstacionName, method = "Chisq")
+```
+
+Tras esta tabla podemos extraer las conclusiones de que no existen diferencias significativas entre las medias de concentración de PM10 entre las siguientes estaciones:
+
+- Estación Avenida Hermanos Felgueroso y Estación Avenida Castilla.
+- Estación Santa Bárbara y Estación Avenida Argentina.
+
+Por otra parte, existen diferencias significativas entre las medias del resto de estaciones. Podemos decir pues que las estaciones Santa Bárbara y Avenida Argentina son las que registran una mayor cantidad de PM10, y las que menos las estaciones Avenida Hermanos Felgueroso y Avenida Castilla (sin existir diferencias significativas entre estas dos estaciones).
+
+
+### 5.2. Concentración de PM2,5 entre las diferentes estaciones.
+Repetiremos el proceso anterior con el resto de variables que hemos seleccionado para analizar, teniendo en cuenta que en el caso del PM2,5 solo dos estaciones reportan este dato (la Estación Avenida Constitución y la Estación de Montevil), por lo que al ser un contraste de dos medias deberíamos aplicar una T-student en lugar de un ANOVA. Hay que considerar que para aplicar una T-student con garantías también debemos cumplir unos supuestos, dos concretamente, siendo estos:
+
+- Normalidad.
+- Homocedasticidad.
+
+Empezamos comprobando el supuesto de normalidad para la variable PM25 a través del test de Kolmogorov-Smirnov.
+```{r}
+# Creamos un dataframe filtrado con las estaciones que reportan PM25.
+data_stations_PM25 <- data_gijon %>% filter(EstacionName %in% c("Estación Avenida Constitución", "Estación de Montevil"))
+
+# Aplicamos la prueba de Kolmogorov-Smirnov.
+ks.test(data_stations_PM25$PM25, pnorm, mean(data_stations_PM25$PM25), sd(data_stations_PM25$PM25))
+```
+
+En el caso del PM25 no podemos decir que se distribuya como una normal, pasamos a comprobar el supuesto de homocedasticidad, al igual que antes y por las mismas razones, utilizaremos el test de Bartlett, el test de Levene y el test de :
+```{r}
+# Aplicamos el test de Bartlett.
+bartlett.test(x = list(station_3$PM25, station_5$PM25))
+```
+
+```{r}
+# Aplicamos el test de Levene.
+leveneTest(y = data_stations_PM25$PM25, group = data_stations_PM25$EstacionName, center = "mean")
+```
+
+```{r}
+# Aplicamos el test de Fligner-Killeen.
+fligner.test(x = list(station_3$PM25, station_5$PM25))
+```
+
+Como hemos podido ver, para ninguno de los tres tests podemos mantener la hipótesis nula, por lo que debemos rechazarla y decir que no existe homogeneidad de varianzas entre los dos subgrupos. Dado que no se cumple ni este supuesto ni el de normalidad, aplicaremos el test T de Mann-Whitney-Wilcoxon, el cual constituye una alternativa no paramétrica para contrastes de dos medias intergrupo cuando no se cumplen algunos supuestos como el de normalidad para garantizar la idoneidad de aplicar una T de Student.
+```{r}
+# Aplicamos el test de Mann-Whitney-Wilcoxon.
+wilcox.test(station_3$PM25, station_5$PM25, paired = FALSE)
+```
+
+El resultado que nos devuelve la tabla anterior, nos indica que sí hay evidencias para considerar que la media de PM2,5 entre las dos estaciones es significativamente distinta, siendo además la Estación de Montevil la que presenta una media de concentración de PM2,5 más alta.
+
+
+### 5.3. Concentración de NO2 entre las diferentes estaciones.
+En el caso del NO2, todas las estaciones reportan este dato, por lo que analizaremos las diferencias de medias entre las seis estaciones. Intentaremos aplicar un ANOVA, para ello veremos si se cumplen los supuestos necesarios, empezando por la normalidad:
+```{r}
+# Aplicamos la prueba de Kolmogorov-Smirnov.
+ks.test(data_gijon$NO2, pnorm, mean(data_gijon$NO2), sd(data_gijon$NO2))
+```
+
+Vemos que no se cumple el supuesto de normalidad, pasamos a comprobar el supuesto de homocedasticidad.
+```{r}
+# Aplicamos el test de Bartlett.
+bartlett.test(NO2~EstacionName, data_gijon)
+```
+
+```{r}
+# Aplicamos el test de Levene.
+leveneTest(y = data_gijon$NO2, group = data_gijon$EstacionName, center = "mean")
+```
+
+```{r}
+# Aplicamos el test de Fligner-Killeen.
+fligner.test(NO2~EstacionName, data_gijon)
+```
+
+No se cumple el supuesto de igualdad de varianzas de los subgrupos y, como hemos comprobado antes, tampoco se cumple el supuesto de normalidad, por lo que volvemos a utilizar el test de Kruskal-Wallis en lugar del ANOVA:
+```{r}
+kruskal.test(data_gijon$NO2, data_gijon$EstacionName)
+```
+
+En base al p-value obtenido, tenemos que rechazar la hipótesis nula del test de Kruskal Wallis por lo que diremos que las medias de los diferentes subgrupos no son todas iguales, si no que existen subgrupos con medias significativamente mayores que otros. Exploramos con más detalle las diferencias entre los distintos subgrupos:
+```{r}
+posthoc.kruskal.nemenyi.test(data_gijon$NO2, data_gijon$EstacionName, method = "Chisq")
+```
+
+Con estos resultados podemos sacar varias conclusiones, en primer lugar podemos decir que no hay diferencias estadísticamente significativas entre las concentraciones medias de NO2 de las siguientes estaciones:
+
+- La Estación Avenida Castilla y la Estación Avenida Argentina.
+- La Estación Avenida Constitución y la Estación Avenida Argentina.
+- La Estación Avenida Constitución y la Estación Avenida Castilla.
+- La Estación Avenida Hermanos Felgueroso y la Estación Avenida Castilla.
+- La Estación de Montevil y la Estación Avenida Castilla.
+- La Estación de Montevil y la Estación Avenida Hermanos Felgueroso.
+- La Estación Santa Bárbara y la Estación Hermanos Felgueroso.
+
+Entre el resto de estaciones sí existen diferencias estadísticamente significativas, siendo las que mayor concentración de NO2 medio tienen las estaciones Santa Bárbara y Avenida Hermanos Felgueroso. En general, puede concluirse que hay menos diferencias significativas con respecto a esta medida entre estaciones en comparación con otras anteriormente analizadas como el PM10.
+
+
+### 5.4. Concentración de SO2 entre las diferentes estaciones.
+En el caso de esta medición, tan solo una estación no aporta información sobre ella (la Estación Santa Bárbara), con lo que compararemos cinco medias relativas a las cinco estaciones que nos informan de las concentraciones de SO2. Siguiendo el procedimiento habitual, comprobamos el supuesto de normalidad con el `test Kolmogorov-Smirnov`:
+```{r}
+# Creamos un dataframe filtrado con las estaciones que reportan SO2.
+data_stations_SO2 <- data_gijon %>% filter(EstacionName != "Estación Santa Bárbara")
+
+# Aplicamos la prueba de Kolmogorov-Smirnov.
+ks.test(data_stations_SO2$SO2, pnorm, mean(data_stations_SO2$SO2), sd(data_stations_SO2$SO2))
+```
+
+Como en los casos anteriores, no se cumple el supuesto de normalidad. Pasamos a comprobar el supuesto de homocedasticidad:
+```{r}
+# Aplicamos el test de Bartlett.
+bartlett.test(x = list(station_1$SO2, station_2$SO2, station_3$SO2, station_4$SO2, station_5$SO2))
+```
+
+```{r}
+# Aplicamos el test de Levene.
+leveneTest(y = data_stations_SO2$SO2, group = data_stations_SO2$EstacionName, center = "mean")
+```
+
+```{r}
+# Aplicamos el test de Fligner-Killeen.
+fligner.test(x = list(station_1$SO2, station_2$SO2, station_3$SO2, station_4$SO2, station_5$SO2))
+```
+
+Comprobamos que no se cumple el supuesto de homocedasticidad y tampoco el de normalidad. Por lo que procedemos a utilizar el test de Kruskal-Wallis en lugar del ANOVA para ver si existen diferencias significativas entre las medias de SO2 de las distintas estaciones.
+```{r}
+kruskal.test(data_stations_SO2$SO2, data_stations_SO2$EstacionName)
+```
+
+Una vez vemos que las medias de todos los subgrupos no son iguales, examinamos dónde están las diferencias:
+```{r}
+posthoc.kruskal.nemenyi.test(data_stations_SO2$SO2, data_stations_SO2$EstacionName, method = "Chisq")
+```
+
+Podemos extraer de la tabla anterior varias conclusiones, relativas a las estaciones que no presentan diferencias estadísticamente significativas entre sí de SO2 estarían:
+
+- La Estación Avenida Castilla y la Estación Avenida Argentina.
+- La Estación Avenida Constitución y la Estación Avenida Argentina.
+- La Estación Avenida Constitución y la Estación Avenida Castilla.
+
+Las demás estaciones presentan diferencias estadísticamente significativas entre sí, destacando la Estación de Montevil por tener la media de concentración de SO2 más baja de todas las estaciones. Las que presentan una mayor concentración de SO2 son la Estación de Avenida Castilla y de Avenida Argentina.
+Al igual que ocurría con las concentraciones de NO2, estas dos estaciones no presentan diferencias significativas entre sí, por lo que parecen ser las estaciones más parecidas (al menos a priori sin examinar otras medidas que pudieran dar diferencias adicionales).
+
+
+## 6. Realizar un forecast para dos métricas significativas - ARIMA / FORECAST.
+El forecast es un modelo de predicción basado en series temporales, ya que nosotros tenemos fechas de distintos años (2015 y 2020), filtraremos el dataframe por fecha para que solo aparezcan los datos del 2020 que al ser más recientes nos parecen más interesantes. Comprobamos una vez filtrado el dataframe qué estaciones reportan datos en 2020.
+```{r}
+# Creamos un dataframe filtrando por fecha.
+data_gijon_2020 <- data_gijon %>% filter(Fecha_UTC > "2020-01-01")
+
+# Comprobamos qué estaciones aportan datos en 2020.
+unique(data_gijon_2020$EstacionName)
+```
+
+Creamos distintos dataframes filtrados por estaciones para poder seleccionar alguna estación en concreto que resulte interesante en relación a alguna medida que queramos predecir. Tras esto procedemos a crear el modelo forecast para la primera métrica elegida (SO2).
+```{r}
+# Creamos distintos dataframes filtrando por estaciones.
+data_gijon_Argentina <- data_gijon_2020 %>% filter(EstacionName == "Estación Avenida Argentina")
+data_gijon_Constitucion <- data_gijon_2020 %>% filter(EstacionName == "Estación Avenida Constitución")
+data_gijon_Castilla <- data_gijon_2020 %>% filter(EstacionName == "Estación Avenida Castilla")
+data_gijon_Montevil <- data_gijon_2020 %>% filter(EstacionName == "Estación de Montevil")
+data_gijon_Felgueroso <- data_gijon_2020 %>% filter(EstacionName == "Estación Avenida Hermanos Felgueroso")
+```
+
+### 6.1. Forecast con SO2.
+Realizamos un gráfico en el que poder comparar las líneas temporales según las distintas estaciones que aportan información sobre esta métrica. De esta forma, podemos visualmente ver una estimación de las tendencias de cada estación y elegir la estación que ofrezca unos datos aparentemente más interesantes. En este caso, elegimos la Estación Avenida Castilla.
+```{r}
+# Realizamos el gráfico con ggplot.
+  ggplot() + 
+    geom_line(data = data_gijon_Constitucion, aes(x = Fecha_UTC, y = SO2), color = "blue") +
+    geom_line(data = data_gijon_Argentina, aes(x = Fecha_UTC, y = SO2), color = "green") +
+    geom_line(data = data_gijon_Castilla, aes(x = Fecha_UTC, y = SO2), color = "orange") +
+    geom_line(data = data_gijon_Felgueroso, aes(x = Fecha_UTC, y = SO2), color = "red") +
+    scale_x_datetime('month')
+```
+
+Comenzamos creando la serie temporal y calculamos sus componentes con la función `stl`. 
+```{r}
+# Creamos la serie temporal.
+SO2_ts = ts(na.omit(data_gijon_Castilla$SO2), frequency=24)
+
+# Sacamos los componentes de la serie temporal.
+SO2_components = stl(SO2_ts, s.window="periodic")
+
+# Mostramos el gráfico.
+plot(SO2_components)
+```
+
+Ya que un modelo ARIMA requiere de estacionalidad. Para que una serie se considere estacionaria su media y su varianza deben ser invariantes en el tiempo. Comprobamos si nuestra serie es estacionaria con el `test de Dickey-Fuller (ADF)`, cuyas hipótesis son:
+
+$H_0$: La serie no es estacionaria.
+
+$H_1$: La serie es estacionaria.
+
+En este caso, vemos que el p-value es > 0.05, con lo que aceptamos hipótesis nula y concluimos que la serie no es estacionaria. Siendo así, realizaremos algunas autocorrecciones para poder realizar el forecast.
+```{r}
+adf.test(SO2_ts, alternative = "stationary")
+```
+
+Posteriormente, realizamos el ajuste del modelo ARIMA indicándole que la serie no es estacionaria para que busque el modelo correcto:
+```{r}
+# Ajustamos el modelo y lo guardamos.
+arima_model <- auto.arima(SO2_ts,  stationary = FALSE)
+
+# Mostramos el modelo ajustado.
+arima_model
+```
+
+Generamos la predicción con el modelo ajustado con la función `forecast`. Por último, mostramos el gráfico del forecast y podemos ver cómo se ha realizado la predicción de los valores futuros de SO2, mostrándose una tendencia sutilmente ascendente.
+```{r}
+# Creamos la predicción.
+prediction_SO2 <- forecast(arima_model, h=30)
+
+# Mostramos la gráfica de la predicción.
+plot(prediction_SO2)
+```
+
+
+### 6.2. Forecast con PM2,5.
+Pasamos a crear el modelo de predicción con otra métrica, en este caso, el PM25. Procedemos siguiendo los mismos pasos que hicimos anteriormente para crear el modelo de SO2, empezando por dibujar un gráfico que ilustre las líneas temporales de las estaciones que reportan esta sustancia.
+```{r}
+# Realizamos el gráfico con ggplot.
+  ggplot() + 
+    geom_line(data = data_gijon_Montevil, aes(x = Fecha_UTC, y = PM25), color = "blue") +
+    geom_line(data = data_gijon_Constitucion, aes(x = Fecha_UTC, y = PM25), color = "red") +
+    scale_x_datetime('month')
+```
+
+Nos quedamos con la estación Avenida Constitución, creaamos la serie temporal y calculamos sus componentes con la función `stl`. 
+```{r}
+# Creamos la serie temporal.
+PM25_ts = ts(na.omit(data_gijon_Constitucion$PM25), frequency=24)
+
+# Sacamos los componentes de la serie temporal.
+PM25_components = stl(PM25_ts, s.window="periodic")
+
+# Mostramos el gráfico.
+plot(PM25_components)
+```
+
+Comprobamos si nuestra serie es estacionaria con el `test de Dickey-Fuller (ADF)`. En este caso, vemos que el p-value es < 0.05, con lo que rechazamos la hipótesis nula y concluimos que la serie es estacionaria. Siendo así, no es necesario realizar autocorrecciones para poder hacer el forecast.
+```{r}
+adf.test(PM25_ts, alternative = "stationary")
+```
+
+Generamos el modelo ARIMA para PM2.5 y lo mostramos.
+```{r}
+# Ajustamos el modelo y lo guardamos.
+PM25_arima_model <- auto.arima(PM25_ts)
+
+# Mostramos el modelo ajustado.
+PM25_arima_model
+```
+
+Generamos la predicción con nuestra serie temporal a través de la función `forecast`. Por último, mostramos el gráfico del forecast y podemos ver cómo se ha realizado la predicción de los valores futuros de PM25, mostrándose una tendencia a la estabilización ligeramente por encima de 5.
+```{r}
+# Creamos la predicción.
+prediction_PM25 <- forecast(PM25_arima_model, h=30)
+
+# Mostramos la gráfica de la predicción.
+plot(prediction_PM25)
+```

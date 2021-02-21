@@ -1,0 +1,60 @@
+---
+title: "Visualizaciones con ggplot"
+author: "María Pérez"
+output: 
+  html_document: 
+    highlight: tango
+    theme: spacelab
+    toc: yes
+---
+
+## Preparación: Carga de librerías.
+```{r}
+library(tidyverse)
+```
+
+
+## Preparación: Carga de los datos.
+```{r}
+ggplot2::mpg
+```
+
+
+## Visualizaciones.
+```{r}
+ggplot(data = mpg) +
+  geom_point(mapping = aes(x = displ, y = hwy, color = drv), size = 5) +
+  geom_smooth(mapping = aes(x = displ, y = hwy, fill = drv, linetype = drv), color = "blue", size = 2, se = FALSE)
+```
+
+
+```{r}
+ggplot(data = mpg) +
+  geom_point(mapping = aes(x = displ, y = hwy, fill = drv), shape = 21, color = "white", size = 5, stroke = 3)
+```
+
+```{r}
+ggplot(data = mpg) +
+  geom_point(mapping = aes(x = displ, y = hwy, color = drv), size = 5) +
+  geom_smooth(mapping = aes(x = displ, y = hwy, color = drv), size = 2, se = FALSE)
+```
+
+
+```{r}
+ggplot(data = mpg) +
+  geom_point(mapping = aes(x = displ, y = hwy, color = drv), size = 5) +
+  geom_smooth(mapping = aes(x = displ, y = hwy), color = "blue", size = 2, se = FALSE)
+```
+
+```{r}
+ggplot(data = mpg) +
+  geom_point(mapping = aes(x = displ, y = hwy), color = "black", size = 5) +
+  geom_smooth(mapping = aes(x = displ, y = hwy, fill = drv), color = "blue", size = 2, se = FALSE)
+```
+
+
+```{r}
+ggplot(data = mpg) +
+  geom_point(mapping = aes(x = displ, y = hwy), color = "black", size = 5) +
+  geom_smooth(mapping = aes(x = displ, y = hwy), color = "blue", size = 2, se = FALSE)
+```

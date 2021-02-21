@@ -1,0 +1,293 @@
+---
+title: "08_EDA_AdultCensus"
+author: "María - Pérez - Bootcamp NEOLAND"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    highlight: tango
+    theme: spacelab
+    toc: yes
+---
+
+## Objetivo de la tarea
+Aplicando lo aprendido durante las clases, el objetivo de la actividad será realizar un análisis exploratorio de datos completo sobre un dataset del censo de adultos del año 1994, incluyendo los pasos de exploración, limpieza y discretización de variables.
+
+
+## Preparación previa
+Empezaremos cargando el dataset, como paso previo al procesado debemos tener algunas consideraciones a la hora de cargar nuestros datos:
+
+- El dataset representa los valores perdidos con el caracter "?", por lo tanto para que esos valores se cargen en R como NAs tenemos que usar el parámetro `na.strings` para indicarle el valor que representa los NAs en el dataset.
+- Usamos la opción `strip.white` para quitar espacios en blanco que puedan afectar al procesamiento de los datos,
+- Pondremos el parámetro `stringsAsFactors` como False, ya que todas las variables no deben ser entendidas por defecto como factores, si no convertidas algunas de ellas más adelante si consideramos que es necesario y conveniente al realizar el análisis y la exploración de los datos.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Cargamos el dataset con la función `read.csv`.
+data_adult <- read.csv(
+  'http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data',
+  stringsAsFactors = FALSE,
+  header = FALSE,
+  na.strings = "?",
+  strip.white = TRUE
+  )
+```
+
+Además, como parte de la preparación del dataset, asignaremos nombres a las distintas columnas a partir de un array y cargaremos las librerías que usaremos a lo largo de la tarea (en este caso, `ggplot2` y `dplyr`).
+```{r}
+# Asignamos nombres a los atributos con la función `names`.
+names(data_adult) <- c("age","workclass","fnlwgt","education","education-num","marital-status","occupation","relationship","race","sex","capital-gain","capital-loss","hour-per-week","native-country","income")
+
+# Cargamos las librerías a utilizar.
+library(ggplot2)
+library(dplyr)
+```
+
+
+## Exploración de los datos
+Comenzando con el análisis del dataset, vemos con la función `dim` que está compuesto por 32561 observaciones distribuidas en 15 variables, además exploramos la existencia de NA's y strings vacías. Observamos que los atributos `workclass`, `occupation` y `native-country` contienen una gran cantidad de valores NA's. No se observan por otra parte valores con strings vacíos.
+```{r}
+# Dimensiones del dataset.
+dim(data_adult)
+
+# Comprobamos NAs y strings vacíos.
+colSums(is.na(data_adult))
+
+# Forzamos con el parámetro na.rm para que se pueda calcular la suma a pesar de los NA's.
+colSums(data_adult == "", na.rm = T) 
+```
+
+Podemos extraer también el listado de las columnas o etiquetas y comprobar el número de filas (en este caso, 32561).
+```{r}
+# Extraemos el listado de las columnas
+ls(data_adult)
+
+# También las etiquetas.
+names(data_adult)
+
+# Comprobamos el número de filas.
+nrow(data_adult)
+```
+
+Para tener una visión global de los datos, con la función `summary` sacaremos un resumen estadístico global. Este resumen incluye medidas de tendencia central, de posición y algunas medidas de dispersión.
+```{r}
+summary(data_adult)
+```
+
+Ya teniendo una imagen global de los datos estadísticos de nuestro dataset, podemos explorar algunos valores estadísticos, así como visualizar tablas de frecuencias de algunos datos concretos.
+```{r}
+# Cálculos estadísticos sobre columnas concretas.
+# Media de edad de los adultos de la muestra.
+mean(data_adult$age)
+
+# Máximo de edad de los adultos de la muestra.
+max(data_adult$age)
+
+# Mínimo de edad de los adultos de la muestra.
+min(data_adult$age)
+
+# Tabla de frecuencias absolutas de los adultos por sexo.
+table(data_adult$sex)
+```
+
+
+## Preparación de los datos
+Realizaremos algunas operaciones previas sobre los datos antes de pasar a la fase de limpieza. Recategorizamos la columna "education":
+```{r}
+# Calculamos el número de filas.
+filas= nrow(data_adult)
+
+# Creamos tres vectores para reasignar los valores de la columna "education".
+E18=c("Preschool","1st-4th","5th-6th","7th-8th","9th","10th" ,"11th","12th")
+E912=c("HS-grad","Some-college","Assoc-acdm","Assoc-voc")
+E1316=c("Bachelors","Masters","Prof-school","Doctorate")
+
+# Iteramos sobre el total de filas.
+ for (i in 1:filas){
+if (data_adult$education[i] %in% E18){
+  data_adult$education[i] = "E18"
+} else if(data_adult$education[i] %in% E912){
+  data_adult$education[i] = "E912"
+} else if (data_adult$education[i] %in% E1316){
+  data_adult$education[i] = "E1316"
+}
+ }
+
+# Mostramos la distribución de frecuencias absolutas del atributo "education".
+table(data_adult$education)
+```
+
+Ahora vamos a crear una nueva columna basada en "hour-per-week" que puede resultarnos útil para el análisis posterior de los datos. Para ello sacaremos la tabla de frecuencias para examinar como se distribuyen los valores en esta variable.
+```{r}
+# Tabla de frecuencias de valores relativos redondeando con tres decimales.
+round(prop.table(table(data_adult$`hour-per-week`)), 2)
+
+# Vamos a categorizar cada persona en función del número de horas que trabaja en cuatro categorías:
+# Sporadic, Part-time, Full-Time y Overwork
+for (i in 1:filas) {
+  if (data_adult$`hour-per-week`[i] <= 15) {
+    data_adult$`work-hours`[i] <- "Sporadic"
+  } else if (data_adult$`hour-per-week`[i] <= 30 ) {
+    data_adult$`work-hours`[i] <- "Part-Time"
+  } else if (data_adult$`hour-per-week`[i] <= 45) {
+    data_adult$`work-hours`[i] <- "Full-Time"
+  } else {
+    data_adult$`work-hours`[i] <- "Overwork"
+  }
+}
+
+# Convertimos a factor la nueva columna.
+data_adult$`work-hours` <- as.factor(data_adult$`work-hours`)
+
+# Mostramos las frecuencias relativas de las nuevas categorías.
+round(prop.table(table(data_adult$`work-hours`)), 2)
+```
+
+
+### Limpieza
+En este apartado analizaremos las frecuencias absolutas y relativas de cada uno de los atributos que vimos previamente en el análisis exploratorio que contenían NAs. Luego procederemos a imputar los mismos. Empezaremos con el atributo `workclass`, que podemos ver que tiene un total de 1836 NAs:
+```{r}
+# Comprobación del total de NAs en el atributo a través de la función `sum` y `is.na`.
+sum(is.na(data_adult$workclass))
+
+# Tabla de frecuencias de valores absolutos.
+table(data_adult$workclass)
+
+# Tabla de frecuencias de valores relativos redondeando con dos decimales.
+round(prop.table(table(data_adult$workclass)), 2)
+```
+
+En base al resultado obtenido, decidimos imputar los NAs del atributo `workclass` por la moda, ya que existe una  mayoría de instancias en una alternativa concreta (en este caso, `Private`, que tiene una frecuencia relativa de 0.74).
+```{r}
+# Imputamos los NAs.
+data_adult$workclass[is.na(data_adult$workclass)] <- "Private"
+
+# Visualizamos las frecuencias de valores absolutos tras la imputación de NAs.
+table(data_adult$workclass)
+
+# Comprobamos que no hay NAs en la columna.
+sum(is.na(data_adult$workclass))
+```
+
+Pasamos a analizar los NAs del atributo `occupation`, que cuenta con 1843 NAs:
+```{r}
+# Comprobación del total de NAs en el atributo a través de la función `sum` y `is.na`.
+sum(is.na(data_adult$occupation))
+
+# Tabla de frecuencias de valores absolutos.
+table(data_adult$occupation)
+
+# Tabla de frecuencias de valores relativos redondeando con dos decimales.
+round(prop.table(table(data_adult$occupation)), 2)
+```
+
+En base a los resultados que vemos en las tablas de frecuencias, decidimos imputar los NAs del atributo `occupation` por valores aleatorios, ya que existe una distribución de los datos bastante uniforme entre las distintas alternativas. Utilizamos para ello la función `sample` que genera valores aleatorios.
+```{r}
+# Imputamos los NAs.
+
+# Creamos un vector con los nombres de los posibles valores que asignaremos aleatoriamente.
+possible_values <- c("Adm-clerical", "Armed-Forces", "Craft-repair", "Exec-managerial", "Farming-fishing", "Handlers-cleaners", "Machine-op-inspct", "Other-service", "Priv-house-serv", "Prof-specialty", "Protective-serv", "Sales", "Tech-support", "Transport-moving")
+
+# Creamos una variable con el número de NAs que hay en la columna "occupation".
+num_na <- sum(is.na(data_adult$occupation))
+
+# Aplicamos la función sample que genera valores aleatorios (en este caso, entre los valores posibles
+# que previamente le hemos dado). Generará el número de valores aleatorios que le hemos pasado como
+# num_na y, con el parámetro de replace = T, indicaremos que el valor escogido pueda volver a salir.
+# Guardamos el resultado en una variable.
+random_values <- sample(possible_values, num_na, replace = T)
+
+# Finalmente, sustituimos los NAs de la columna occupation por los valores recogidos en la variable
+# random_values.
+data_adult$occupation[is.na(data_adult$occupation)] <- random_values
+
+# Comprobamos que no hay NAs en la columna.
+sum(is.na(data_adult$occupation))
+```
+
+Una vez resuelto lo anterior, pasamos a analizar con el mismo procedimiento el último atributo que presenta valores NAs (`native-country`), este atributo presenta 583 NAs:
+```{r}
+# Comprobación del total de NAs en el atributo a través de la función `sum` y `is.na`.
+sum(is.na(data_adult$`native-country`))
+
+# Tabla de frecuencias de valores absolutos.
+table(data_adult$`native-country`)
+
+# Tabla de frecuencias de valores relativos redondeando con dos decimales.
+round(prop.table(table(data_adult$`native-country`)), 2)
+```
+
+En vista de los resultados, y al igual que en el caso del atributo `workclass`, al existir una alternativa en la que claramente se registran la mayoría de datos, optamos por elegir la moda como método de imputación de los NAs de este atributo. En este caso la moda es `United-States`.
+```{r}
+# Imputamos los NAs.
+data_adult$`native-country`[is.na(data_adult$`native-country`)] <- "United-States"
+
+# Visualizamos las frecuencias de valores absolutos tras la imputación de NAs.
+table(data_adult$`native-country`)
+
+# Comprobamos que no hay NAs en la columna.
+sum(is.na(data_adult$`native-country`))
+```
+
+
+### Discretización
+En este apartado, convertimos en factores las variables que conceptualemente son categóricas.
+```{r}
+# Realizamos la factorización del atributo.
+data_adult_cols <- c("age", "workclass", "fnlwgt", "education", "education-num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hour-per-week", "native-country", "income")
+
+# Iteramos sobre el vector previamente creado y convertimos en factor cada columna.
+for (i in data_adult_cols){
+  data_adult[,i] = as.factor(data_adult[,i])
+}
+```
+
+
+## Visualizaciones del análisis de los datos
+Una vez limpiados los datos y discretizadas las variables, crearemos algunas visualizaciones que nos servirán para el análisis de nuestros datos. Analizaremos por ejemplo la interacción entre el atributo "income" (el cual hace referencia a los ingresos económicos) y otros como el sexo o la raza.
+```{r}
+# Visualizamos con la discretización del sexo según el atributo `income`.
+ggplot(data=data_adult[1:filas,],
+       aes(x = sex, fill = income)
+       ) + geom_bar() + ggtitle("Diferencias de ingresos económicos según el sexo")
+```
+
+```{r}
+# Visualizamos con la discretización de la "raza" según el atributo `income`.
+ggplot(data=data_adult[1:filas,],
+       aes(x = race, fill = income)
+       ) + geom_bar() + ggtitle("Diferencias de ingresos económicos según la raza")
+```
+
+En el siguiente gráfico, comparamos las diferencias de ingresos económicos según sexo y raza. Podemos observar que el colectivo más pobre son los etiquetados como "black" seguidos de los etiquetados como "american-indian-eskimo", los más ricos por otro lado serían los "asian-pac-islander" seguidos muy de cerca de los "white"; en cuestiones de sexo, los hombres cobran más en comparativa que la mujer independientemente de la raza.
+```{r}
+# Creamos el gráfico con la función `ggplot`.
+ggplot(data = data_adult[1:filas,],
+       aes(x = race,
+           fill= income
+          )
+) + geom_bar(position="fill") + ylab("Frecuencia")+  facet_wrap(~sex) + 
+  ggtitle("Diferencias de ingresos económicos según sexo y raza")
+```
+
+Otro atributo interesante a analizar es "workclass" (el cual hace referencia a los distintos tipos de trabajo). Este atributo lo podemos relacionar con otros y visualizar el resultado para sacar conclusiones:
+```{r}
+# Visualizamos la frecuencia del sexo según el atributo `workclass`
+ggplot(data = data_adult[1:filas,],
+       aes(x = sex, fill = workclass)
+       ) + geom_bar() + ggtitle("Tipos de trabajos en función del sexo")
+```
+
+Al comparar el atributo "workclass" con la educación recibida por cada persona, podemos ver como las personas que recibieron durante más años educación tienen trabajos menos dispares, en contraposición con los que recibieron menos educación, donde se observa la mayor diversidad de tipos de trabajo. También podemos apreciar que las personas que recibieron un mayor tiempo de educación son en comparativa las que menos trabajos "without-pay" realizan.
+```{r}
+# Visualizamos la educación según el atributo `workclass`.
+ggplot(data = data_adult[1:filas,],
+       aes(x = education, fill = workclass)
+       ) + geom_bar() + ggtitle("Tipos de trabajos en función de la educación recibida")
+```
+
+Por último, relacionaremos la columna previamente creada (work-hours), la cual representa el número de horas trabajadas por semana, con el atributo "workclass". Podemos apreciar algunas diferencias entre trabajos al visualizar el gráfico, como por ejemplo el valor "Federal-gov" suele estar asociado a una jornada más normativa (que en este caso llamamos, full-time), así como la inexistencia de este trabajo o del trabajo "Local-gov" en categorías que se corresponden con muy pocas horas semanales (en este caso, categoría "sporadic").
+```{r}
+# Visualizamos la columna "work-hours" según el atributo `workclass`.
+ggplot(data = data_adult[1:filas,],
+       aes(x = `work-hours`, fill = workclass)
+       ) + geom_bar() + ggtitle("Tipos de trabajos en función del número de horas trabajadas por semana")
+```
+

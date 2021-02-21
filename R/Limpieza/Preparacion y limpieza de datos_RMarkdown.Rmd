@@ -1,0 +1,165 @@
+---
+title: 'Actividad: Preparación y limpieza de datos'
+author: "María Pérez Campos"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Preparación previa
+
+### Instalación y carga de librerías
+Para realizar esta actividad necesitaremos instalar y cargar varias librerías. Lo hacemos de la siguiente manera:
+
+```{r, results='hide', message=FALSE}
+InstallAndLoadLibrary <- function(library_name) {
+	if(!library_name %in% installed.packages()) {
+	  install.packages(library_name, depend = TRUE)
+	} 
+	library(library_name, character.only = TRUE)
+}
+lapply(c("knitr", "lubridate", "dplyr", "reshape"), InstallAndLoadLibrary)
+```
+
+### Establecer el entorno de trabajo
+Antes de iniciar el proceso de preparación y limpieza de datos creamos el directorio donde se guardará nuestra actividad. Una vez creado, establecemos dicho directorio como nuestro espacio de trabajo actual y limpiamos todos los objetos que tiene R cargados, comprobando posteriormente el resultado.
+
+```{r}
+working_directory <- "d:/Big Data_Data Science/Master Big Data/Modulo. Data Science Tradicional_Analisis de datos y aprendizaje automatico con R y SQL/R/practicas_R"
+if (!file.exists(working_directory)) {
+  dir.create(working_directory)
+}
+knitr::opts_knit$set(root.dir = working_directory)
+rm(list = ls())
+ls()
+```
+Al trabajar en RMarkdown es necesario establecer el directorio de trabajo haciendo uso de la libreria `knitr`, ya que `setwd` solo se aplicaría al párrafo actual de código.
+
+### Obtención del dataset
+Previamente a descargar el dataset de internet, creamos un subdirectorio donde se guardarán nuestros datos, a la misma altura que el directorio `working_directory`.
+
+```{r}
+if (!file.exists("./datos")) {
+  dir.create("./datos")
+}
+file_URL <- "http://stat405.had.co.nz/data/billboard.csv"
+download.file(file_URL, destfile = "./datos/billboard.csv", method = "wininet")
+```
+Asimismo, guardamos la fecha de descarga para falicitar la reproducibilidad y trazabilidad del código.
+```{r}
+download_date <- date()
+download_date
+```
+
+### Lectura de datos
+Una vez tenemos el dataset descargado pasamos a la lectura del mismo. Para ello hacemos uso de la función `read.table` y especificamos los parámetros de lectura del dataset, teniendo también en cuenta la prevención de posibles errrores generados por las dobles comillas con el argumento `quote`. Finalmente imprimimos los datos en forma tabulada mostrando las primeras filas de la tabla para comprobar que el dataset se ha cargado correctamente. Mostramos la tabla con la librería `knitr`.
+
+```{r}
+billboard_data <- read.table(
+  "./datos/billboard.csv",
+  row.names = NULL,
+  sep = ",",
+  quote = "\"",
+  na.strings = c("NA"),
+  stringsAsFactors = FALSE,
+  header = TRUE
+)
+kable(head(billboard_data[, 1:5]))
+```
+
+
+## Preparación  y limpieza de los datos
+
+### Renombrado de columnas
+Para empezar con la limpieza de datos, visualizamos los nombres de las columnas y posteriormente renombramos algunas de ellas para que su título resulte más estético o descriptivo (esto segundo aplicaría al caso de la columna "time", que pasaría a llamarse "duration"). El resto de las columnas del dataset las mantenemos por el momento con el mismo nombre (algunas de ellas serán modificadas más adelante, por lo que no nos meteremos en renombrarlas).
+
+```{r}
+names(billboard_data)
+names(billboard_data)[2] <- "artist"
+names(billboard_data)[4] <- "duration"
+names(billboard_data)[6] <- "date_entered"
+names(billboard_data)[7] <- "date_peaked"
+```
+
+### Tratamiento individual de las columnas
+
+#### Eliminar columna "year"
+Al observar la colunma "year", podemos apreciar que tiene un único valor (2000), comprobamos que este es el único valor de la columna con el comando `unique` y decidimos eliminar dicha columna por resultar poco informativa, renombrando el dataset para considerarlo como datos de Billboard del año 2000 en global.
+Como nota al realizar esta acción, habría que tener en cuenta que si el objetivo para el que se quisiera utilizar el dataset implicara una posterior introducción de datos de canciones de otros años, no tendría sentido realizar esta operación. Esta acción hace uso de la librería `dplyr`.
+
+```{r}
+unique(billboard_data$year)
+billboard_data_year2000 <- select(billboard_data, -year)
+```
+
+#### Convertir la columna "genre" en factor
+A pesar de que en el proceso de lectura de datos pedimos que considerara todas las columnas del dataset como objetos de tipo "character", la columna "genre" estaría mejor entendida como "factor", con distintos "levels" que se corresponderían a los distintos géneros de las canciones (concretamente saldrían diez niveles dentro del factor). Comprobamos el cambio de clase de la columna y vemos los niveles que nos devuelve una vez factorizada.
+```{r}
+class(billboard_data_year2000$genre)
+billboard_data_year2000$genre <- as.factor(billboard_data_year2000$genre)
+class(billboard_data_year2000$genre)
+levels(billboard_data_year2000$genre)
+```
+
+#### Cambiar el formato de las columnas "date_entered" y "date_peaked"
+Como podemos comprobar, las columnas de fecha "date_entered" y "date_peaked" son actualmente strings (tipo "character"). Sin embargo, dada la naturaleza de ambas, el formato que mejor encajaría con ellas y que las haría más útiles a la hora de trabajar con los datos sería el formato fecha (tipo "date"). Cambiamos de formato con la librería `lubridate` y comprobamos la clase de nuestras columnas antes y después de nuestras acciones.
+
+```{r}
+class(billboard_data_year2000$date_entered)
+class(billboard_data_year2000$date_peaked)
+billboard_data_year2000$date_entered <- ymd(billboard_data_year2000$date_entered)
+billboard_data_year2000$date_peaked <- ymd(billboard_data_year2000$date_peaked)
+class(billboard_data_year2000$date_entered)
+class(billboard_data_year2000$date_peaked)
+```
+
+#### Cambiar el formato de la columna "duration"
+Tal y como tenemos el dataset, la columna "duration" nos devuelve información en strings (tipo "character"). Para intentar convertir la información contenida en esta columna en datos con mayor valor informativo y más manejables a la hora de realizar operaciones con ellos, la pasaremos a un formato que represente correctamente una duración (pudiendo distinguir minutos y segundos). Para ello creamos una función que llamaremos `DurationFromString`, la cual en primer lugar separará una string en dos trozos para, posteriormente, llamar a la función `duration` y codificar la primera parte de la string como minutos y la segunda parte como segundos (estableciendo estos valores como tipo "numeric"). Luego aplicamos esta función sobre la columna "duration" y obtenemos el cambio de formato a minutos y segundos de la columna completa. Finalmente, comprobamos el cambio de clase de la columna, que pasaría a ser de clase "Duration" (la cual proviene de la librería `lubridate`).
+
+```{r}
+class(billboard_data_year2000$duration)
+DurationFromString <- function(duration_str) {
+  splits <- strsplit(duration_str, ":")[[1]]
+  duration(second = as.numeric(splits[2]), minute = as.numeric(splits[1]))
+}
+billboard_data_year2000$duration <- DurationFromString(billboard_data_year2000$duration)
+class(billboard_data_year2000$duration)
+```
+
+### Reestructuración del dataset
+
+#### Transformar las columnas "week" a filas y cambiarles el formato
+Analizando el dataset podemos ver cómo las distintas columnas referidas a las distintas semanas realmente hacen alusión a una misma variable (la semana), por eso decidimos transformarlas a filas y quedarnos con dos nuevas columnas, una que haría alusión a la semana y otra a los valores de cada semana. Para esta acción utilizamos la librería `reshape`.
+Además, renombramos las filas para quedarnos con el número de la semana a la que hacen referencia y transformamos este número (que seguiría siendo una string y, por tanto, de tipo character) a un formato entero, ya que conceptualmente es el formato que más encaja con el dato. Podemos ver el resultado de nuestras operaciones con el comando `kable`.
+
+```{r}
+names(billboard_data_year2000)[7:82] <- 1:76
+billboard_data_year2000 <- melt(billboard_data_year2000, 1:6)
+billboard_data_year2000$variable <- as.integer(billboard_data_year2000$variable)
+kable(head(billboard_data_year2000))
+```
+
+#### Renombrar las nuevas columnas y filtrar los "NA"
+
+Tras la última operación, podíamos ver como aparecían dos nuevas columnas en nuestra tabla ("variable" y "value"). Renombraremos esas dos columnas para dotarlas de significado semántico, correspondiendo la primera a las semanas y la segunda a la posición en la que había quedado la canción en el ranking dicha semana. Al realizar las operaciones anteriores, también se aprecia cómo existe un número muy alto de filas con valores "NA", decidimos eliminar dichas filas por no tener ningún valor informativo y hacer que el dataset sea más grande de forma innecesaria. Para llevar a cabo esta última opción, hacemos uso de la función `filter` de la librería `dplyr`. Comprobamos antes y después las dimensiones de la tabla con el comando `dim` y visualizamos el resultado.
+
+```{r}
+dim(billboard_data_year2000)
+names(billboard_data_year2000)[7] <- "week"
+names(billboard_data_year2000)[8] <- "ranking"
+billboard_data_year2000 <- billboard_data_year2000 %>%
+       filter(!is.na(ranking))
+dim(billboard_data_year2000)
+kable(head(billboard_data_year2000))
+```
+
+## Guardar el dataset
+Finalmente, tras las operaciones realizadas, guardamos el dataset (ahora más "tidy") en un nuevo subdirectorio para los datos en limpio, donde seguiremos trabajando en el futuro si queremos continuar mejorando nuestro dataset con más operaciones de limpieza.
+
+```{r}
+if (!file.exists("./tidydata")) {
+  dir.create("./tidydata")
+}
+save.image(file = "./tidydata/billboard_data_year2000.RData")
+```
+
